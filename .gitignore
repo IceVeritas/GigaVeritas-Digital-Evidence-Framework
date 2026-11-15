@@ -1,0 +1,20 @@
+# Entornos y caché de Python
+__pycache__/
+*.py[cod]
+.venv*/
+*venv*/
+
+# Expedientes reales, capturas y salidas generadas
+*AUD-A8-REYRAN*
+*AUD_A8_REYRAN*
+index_input.html
+*_FIXED.html
+solo_lectura_report_*.json
+time_stamp_sync_*.json
+manifest_*.json
+manifest_*.html
+EVIDENCE_*.txt
+*.log
+*.png
+*.mkv
+tmp/
