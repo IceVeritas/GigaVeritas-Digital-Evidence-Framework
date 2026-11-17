@@ -3,7 +3,7 @@
 
 """
 ================================================================================
-GigaVeritas Digital Evidence Framework — Módulo de Consolidación y Manifiesto (V2.0)
+GigaVeritas Digital Evidence Framework — Módulo de Consolidación y Manifiesto (V2.0.1)
 ================================================================================
 
 Proyecto       : GigaVeritas-Digital-Evidence-Framework
@@ -11,7 +11,7 @@ Organización   : IceVeritas
 Autor          : Atanas Atanasov
 Módulo         : manifest.py
 Dependencia    : Informes JSON de Solo Lectura y Time Stamp
-Versión        : 2.0
+Versión        : 2.0.1
 
 Marco metodológico:
     ISO/IEC 27037:2012 — Guidelines for identification, collection,
@@ -71,8 +71,12 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-VERSION = "Manifest — Versión 2.0"
+import forensic_core as fc
+
+VERSION = "Manifest — Versión 2.1"
 SUPPORTED = {".png", ".mkv", ".txt"}
+EXPECTED_SOLO_SCHEMA = "iceveritas.solo_lectura.report.v1"
+EXPECTED_TIMESTAMP_TOOL = "IceVeritas time_stamp_sync"
 
 DOCUMENT_FIELDS = {
     "autor", "idioma", "antiguedad", "texto-resena", "texto-respuesta",
@@ -101,6 +105,7 @@ class SourceIndexParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.records: dict[str, dict[str, Any]] = {}
+        self.duplicate_ids: list[str] = []
         self.current: dict[str, Any] | None = None
         self.active: list[dict[str, Any]] = []
 
@@ -156,6 +161,12 @@ class SourceIndexParser(HTMLParser):
         if self.current is None:
             return
         record = self.current
+        audit_id = record["audit_id"]
+        if audit_id in self.records:
+            self.duplicate_ids.append(audit_id)
+            self.current = None
+            self.active = []
+            return
         fields: dict[str, str] = {}
         for name, entries in record["values"].items():
             unique = list(dict.fromkeys(entries))
@@ -163,7 +174,7 @@ class SourceIndexParser(HTMLParser):
                 fields[name] = unique[0]
             elif len(unique) > 1:
                 record["ambiguous_fields"].append(name)
-        self.records[record["audit_id"]] = {
+        self.records[audit_id] = {
             "fields": fields,
             "ambiguous_fields": record["ambiguous_fields"],
             "attributes": record["attributes"],
@@ -179,6 +190,9 @@ def read_source_index(path: Path | None) -> tuple[dict[str, dict[str, Any]], str
     parser = SourceIndexParser()
     parser.feed(raw.decode("utf-8-sig", errors="replace"))
     parser.close()
+    if parser.duplicate_ids:
+        dups = ", ".join(sorted(set(parser.duplicate_ids)))
+        raise ValueError(f"El HTML de origen contiene identificadores data-audit-id duplicados: {dups}")
     return parser.records, hashlib.sha256(raw).hexdigest()
 
 
@@ -189,25 +203,69 @@ def source_platform(url: str) -> str:
     return "NO DISPONIBLE"
 
 
-def read_json(path: Path) -> dict[str, Any]:
+def read_json(path: Path, expected_role: str) -> dict[str, Any]:
     try:
         data = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError) as exc:
         raise ValueError(f"No se pudo leer {path}: {exc}") from exc
     if not isinstance(data, dict) or not isinstance(data.get("records"), list):
         raise ValueError(f"{path} debe contener una lista 'records'.")
+
+    if expected_role == "solo_lectura":
+        if data.get("schema") != EXPECTED_SOLO_SCHEMA:
+            raise ValueError(
+                f"{path} no corresponde al esquema esperado ({EXPECTED_SOLO_SCHEMA}): "
+                f"se recibió {data.get('schema')!r}."
+            )
+        if not data.get("input_directory") or not data.get("index_filename"):
+            raise ValueError(f"{path} carece de 'input_directory' o 'index_filename'.")
+    elif expected_role == "time_stamp":
+        if data.get("tool") != EXPECTED_TIMESTAMP_TOOL:
+            raise ValueError(
+                f"{path} no corresponde a la herramienta esperada ({EXPECTED_TIMESTAMP_TOOL}): "
+                f"se recibió {data.get('tool')!r}."
+            )
+        if not data.get("source_html"):
+            raise ValueError(f"{path} carece del campo 'source_html'.")
+
     return data
 
 
-def file_kind(item: dict[str, Any], timestamp: bool = False) -> str | None:
+def validate_inputs_compatibility(solo: dict[str, Any], timestamp: dict[str, Any]) -> None:
+    """Verifica que ambos informes JSON procedan del mismo archivo índice HTML."""
+    solo_html = Path(str(solo["index_filename"])).name
+    ts_html = Path(str(timestamp["source_html"])).name
+    if solo_html != ts_html:
+        raise ValueError(
+            f"Incompatibilidad de origen entre informes: Solo Lectura referencia '{solo_html}' "
+            f"y Time Stamp referencia '{ts_html}'."
+        )
+
+
+def _index_unique_records(records: list[Any], source_label: str) -> dict[str, dict[str, Any]]:
+    indexed: dict[str, dict[str, Any]] = {}
+    duplicates: list[str] = []
+    for idx, rec in enumerate(records):
+        if not isinstance(rec, dict) or rec.get("record_id") is None:
+            raise ValueError(f"Registro malformado en {source_label} (posición {idx}): falta 'record_id'.")
+        rid = str(rec["record_id"]).strip()
+        if not rid:
+            raise ValueError(f"Registro con 'record_id' vacío en {source_label} (posición {idx}).")
+        if rid in indexed:
+            duplicates.append(rid)
+        else:
+            indexed[rid] = rec
+    if duplicates:
+        dups = ", ".join(sorted(set(duplicates)))
+        raise ValueError(f"Identificadores 'record_id' duplicados en {source_label}: {dups}")
+    return indexed
+
+
+def file_kind(item: dict[str, Any]) -> str | None:
+    """Determina el tipo de archivo estrictamente por su extensión real admitida."""
     ext = Path(str(item.get("filename") or item.get("relative_path") or "")).suffix.lower()
-    category = str(item.get("category") or "").upper()
     if ext in SUPPORTED:
         return ext[1:].upper()
-    if timestamp and category == "IMAGE":
-        return "PNG"
-    if timestamp and category == "VIDEO":
-        return "MKV"
     return None
 
 
@@ -219,34 +277,50 @@ def norm_name(item: dict[str, Any]) -> str:
     return str(item.get("filename") or Path(norm_path(item)).name).casefold()
 
 
-def correlate(solo: dict[str, Any], timestamp: dict[str, Any], source_root: str | None = None) -> list[dict[str, Any]]:
-    solo_records = {str(r.get("record_id")): r for r in solo.get("records", []) if r.get("record_id") is not None}
-    time_records = {str(r.get("record_id")): r for r in timestamp.get("records", []) if r.get("record_id") is not None}
+def correlate(
+    solo: dict[str, Any],
+    timestamp: dict[str, Any],
+    source_root: str | None = None,
+) -> tuple[list[dict[str, Any]], int]:
+    solo_records = _index_unique_records(solo.get("records", []), "Solo Lectura")
+    time_records = _index_unique_records(timestamp.get("records", []), "Time Stamp")
     record_ids = list(dict.fromkeys([*solo_records, *time_records]))
-    combined = []
+    combined: list[dict[str, Any]] = []
+    unsupported_count = 0
+
     for rid in record_ids:
         sr = solo_records.get(rid)
         tr = time_records.get(rid)
-        evidences = [e for e in (sr or {}).get("evidences", []) if isinstance(e, dict) and file_kind(e) in ("PNG", "MKV", "TXT")]
-        artifacts = [a for a in (tr or {}).get("artifacts", []) if isinstance(a, dict) and file_kind(a, True) in ("PNG", "MKV", "TXT")]
+
+        raw_evidences = [e for e in (sr or {}).get("evidences", []) if isinstance(e, dict)]
+        raw_artifacts = [a for a in (tr or {}).get("artifacts", []) if isinstance(a, dict)]
+
+        evidences = [e for e in raw_evidences if file_kind(e) in ("PNG", "MKV", "TXT")]
+        artifacts = [a for a in raw_artifacts if file_kind(a) in ("PNG", "MKV", "TXT")]
+
+        unsupported_count += (len(raw_evidences) - len(evidences)) + (len(raw_artifacts) - len(artifacts))
+
         used: set[int] = set()
         files = []
         for e in evidences:
             kind = file_kind(e)
+            assert kind is not None
             match = None
             ep = norm_path(e)
             if ep:
-                match = next((i for i, a in enumerate(artifacts) if i not in used and file_kind(a, True) == kind and norm_path(a) == ep), None)
+                match = next((i for i, a in enumerate(artifacts) if i not in used and file_kind(a) == kind and norm_path(a) == ep), None)
             if match is None:
                 en = norm_name(e)
-                match = next((i for i, a in enumerate(artifacts) if i not in used and file_kind(a, True) == kind and norm_name(a) == en), None)
+                match = next((i for i, a in enumerate(artifacts) if i not in used and file_kind(a) == kind and norm_name(a) == en), None)
             a = artifacts[match] if match is not None else None
             if match is not None:
                 used.add(match)
             files.append(build_file(e, a, kind, source_root))
         for i, a in enumerate(artifacts):
             if i not in used:
-                files.append(build_file(None, a, file_kind(a, True), source_root))
+                kind = file_kind(a)
+                assert kind is not None
+                files.append(build_file(None, a, kind, source_root))
         files.sort(key=lambda f: (f["kind"], (f.get("relative_path") or f.get("filename") or "").casefold()))
         status = record_status(files)
         combined.append({
@@ -255,7 +329,7 @@ def correlate(solo: dict[str, Any], timestamp: dict[str, Any], source_root: str 
             "source_records": {"solo_lectura": sr, "time_stamp": tr},
             "evidences": files,
         })
-    return combined
+    return combined, unsupported_count
 
 
 def build_file(e: dict[str, Any] | None, a: dict[str, Any] | None, kind: str, source_root: str | None) -> dict[str, Any]:
@@ -264,8 +338,14 @@ def build_file(e: dict[str, Any] | None, a: dict[str, Any] | None, kind: str, so
     time_hash = (a or {}).get("sha256")
     solo_status = (e or {}).get("hash_status")
     time_status = (a or {}).get("hash_status")
-    changed = (a or {}).get("file_changed_during_read") is True
-    has_error = any(s is not None and str(s).upper() not in ("OK", "SUCCESS") for s in (solo_status, time_status))
+    changed = (
+        (a or {}).get("file_changed_during_read") is True
+        or str(solo_status or "").upper() == "CHANGED_DURING_READ"
+    )
+    has_error = any(
+        s is not None and str(s).upper() not in ("OK", "SUCCESS", "CHANGED_DURING_READ")
+        for s in (solo_status, time_status)
+    )
     if changed:
         state = "CAMBIO_DURANTE_LECTURA"
     elif has_error:
@@ -300,7 +380,7 @@ def build_file(e: dict[str, Any] | None, a: dict[str, Any] | None, kind: str, so
         "mtime_utc": (a or {}).get("mtime_utc") or ((e or {}).get("fs_timestamps") or {}).get("mtime_utc"),
         "ctime_utc": (a or {}).get("ctime_utc") or ((e or {}).get("fs_timestamps") or {}).get("ctime_utc"),
         "ctime_description": "Atributo del sistema de archivos",
-        "file_changed_during_read": (a or {}).get("file_changed_during_read"),
+        "file_changed_during_read": changed if (a or {}).get("file_changed_during_read") is not None or solo_status is not None else None,
         "observed_timestamp": (e or {}).get("observed_timestamp"),
         "timestamp_origin": (e or {}).get("source_origin"),
         "png_validation": validation,
@@ -317,7 +397,11 @@ def record_status(files: list[dict[str, Any]]) -> str:
     return "COINCIDENTE" if files else "NO_VERIFICABLE"
 
 
-def summarize(records: list[dict[str, Any]]) -> dict[str, int]:
+def summarize(
+    records: list[dict[str, Any]],
+    source_records: dict[str, dict[str, Any]],
+    unsupported_artifacts: int = 0,
+) -> dict[str, int]:
     files = [f for r in records for f in r["evidences"]]
     states = Counter(f["integrity_status"] for f in files)
     counts = Counter(f["kind"] for f in files)
@@ -327,15 +411,21 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, int]:
         for r in records
         for f in r["evidences"]
     )
+    documented_responses = sum(
+        bool((source_records.get(r["record_id"]) or {}).get("fields", {}).get("texto-respuesta"))
+        for r in records
+    )
     data_files = counts["PNG"] + counts["MKV"]
     return {
-        "respuestas_vinci_documentadas": len({r["record_id"] for r in records}),
+        "expedientes_correlacionados": len(records),
+        "respuestas_vinci_documentadas": documented_responses,
         "archivos_asociados_a_respuestas": data_files + primary_txt,
         "datos_origen": data_files,
         "png": counts["PNG"],
         "mkv": counts["MKV"],
         "documentacion_auxiliar": counts["TXT"],
         "archivos_examinados": len(files),
+        "artefactos_no_admitidos_por_extension": unsupported_artifacts,
         "comparaciones_sha256": sum(bool(f.get("sha256_solo_lectura") and f.get("sha256_time_stamp")) for f in files),
         "coincidentes": states["COINCIDENTE"],
         "discrepancias": states["DISCREPANCIA"],
@@ -344,6 +434,7 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, int]:
         "cambios_durante_lectura": states["CAMBIO_DURANTE_LECTURA"],
         "no_verificables": states["NO_VERIFICABLE"],
     }
+
 
 def display(value: Any) -> str:
     if value is None or value == "":
@@ -408,7 +499,7 @@ def documentary_report_text(
         "CONSOLIDATED DOCUMENTARY AND TECHNICAL EVIDENCE REPORT — AIRE DU REYRAN (A8)",
         "=" * width,
     ]
-    
+
     lines += section("IDENTIFICACIÓN DEL PROYECTO Y LA EVIDENCIA")
     lines += field_line("Proyecto", "IceVeritas")
     lines += field_line("Tipo de documento", "INFORME DOCUMENTAL Y TÉCNICO CONSOLIDADO")
@@ -470,7 +561,7 @@ def documentary_report_text(
             lines += field_line("Origen del timestamp observado", evidence.get("timestamp_origin"))
         elif kind == "MKV":
             lines += field_line("Metadatos internos del contenedor MKV", "NO ANALIZADOS")
-    lines += [  
+    lines += [
         "",
         "=" * width,
         "OBSERVACIONES METODOLÓGICAS Y LIMITACIONES",
@@ -484,7 +575,7 @@ def documentary_report_text(
         "El HTML de origen y las evidencias originales se leen sin modificarlos.",
         "Este TXT consolidado se genera a partir de los datos recibidos de Solo Lectura y Time Stamp.",
         "=" * width,
-    ]   
+    ]
     margin = "    "
     lines = [margin + line if line.strip() else "" for line in lines]
     return "\n".join(lines) + "\n"
@@ -535,9 +626,11 @@ def evidence_card(f: dict[str, Any]) -> str:
       {field('Estado durante el cálculo del hash', read_state)}</dl>{details}</article>'''
 
 
-def html_report(doc: dict[str, Any]) -> str:
+def html_report(doc: dict[str, Any], source_records: dict[str, dict[str, Any]] | None = None) -> str:
     s = doc["summary"]
+    source_records = source_records or {}
     cards = "".join(f'<div class="stat"><span>{label}</span><b>{s[key]}</b></div>' for key, label in [
+        ("expedientes_correlacionados", "Expedientes correlacionados"),
         ("respuestas_vinci_documentadas", "Respuestas de VINCI documentadas"),
         ("archivos_asociados_a_respuestas", "Archivos asociados a las respuestas"),
         ("datos_origen", "Datos de origen"),
@@ -553,21 +646,16 @@ def html_report(doc: dict[str, Any]) -> str:
     for r in doc["records"]:
         files = "".join(evidence_card(f) for f in r["evidences"])
         report = r.get("documentary_report") or {}
+        attrs = (source_records.get(r["record_id"]) or {}).get("attributes", {})
+        highway_val = attrs.get("data-highway") or "NO DISPONIBLE"
+        location_val = attrs.get("data-location") or "NO DISPONIBLE"
         report_link = (f'<p class="source-link"><a href="../txt/{quote(report["filename"])}">Abrir informe consolidado TXT</a>'
                        f' · SHA-256: <code>{html.escape(report["sha256"])}</code></p>') if report else '<p class="muted">Informe consolidado TXT: NO DISPONIBLE</p>'
-        sections.append(f'''<section class="record" id="record-{html.escape(r['record_id'], quote=True)}"><header class="record-head"><div><p class="eyebrow">RESPUESTA DOCUMENTADA</p><h2>{esc(r['record_id'])}</h2></div><span class="status status-{r['status']}">{r['status'].replace('_',' ')}</span>
-                        </div>
-                        <div>
-                            <strong>Réf:</strong> AUD-A8-REYRAN-2026
-                        </div>
-                        <div>
-                            <strong>Opérateur:</strong> VINCI Autoroutes (Escota)
-                        </div></header>{report_link}<div class="evidence-grid">{files or '<p class="empty">Sin archivos disponibles.</p>'}</div></section>''')
-    return f'''<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="IceVeritas es un proyecto independiente de documentación técnica, identificación y verificación de la integridad de materiales digitales mediante procedimientos reproducibles y huellas criptográficas SHA-256."> <meta name="robots" content="index, follow">
+        sections.append(f'''<section class="record" id="record-{html.escape(r['record_id'], quote=True)}"><header class="record-head"><div><p class="eyebrow">EXPEDIENTE DOCUMENTADO</p><h2>{esc(r['record_id'])}</h2></div><div><strong>Carretera:</strong> {esc(highway_val)}</div><div><strong>Ubicación:</strong> {esc(location_val)}</div><span class="status status-{r['status']}">{r['status'].replace('_',' ')}</span></header>{report_link}<div class="evidence-grid">{files or '<p class="empty">Sin archivos disponibles.</p>'}</div></section>''')
+    return f'''<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="description" content="IceVeritas es un proyecto independiente de documentación técnica, identificación y verificación de la integridad de materiales digitales mediante procedimientos reproducibles y huellas criptográficas SHA-256."> <meta name="robots" content="index, follow">
 <meta name="author" content="IceVeritas">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="application-name" content="IceVeritas">
-<meta name="keywords" content="IceVeritas, evidencias digitales, verificación SHA-256, integridad digital, documentación forense, auditoría digital, trazabilidad documental"><title>IceVeritas · Manifest 2.0</title>
+<meta name="keywords" content="IceVeritas, evidencias digitales, verificación SHA-256, integridad digital, documentación forense, auditoría digital, trazabilidad documental"><title>IceVeritas · Manifest 2.1</title>
 <style>
 :root {{--navy:#142b45;--blue:#244b70;--teal:#367e83;--paper:#fff;--bg:#edf1f4;--ink:#192a3a;--muted:#5e6c78;--line:#d3dce3;--ok:#246b53;--warn:#9a6500;--bad:#a33a37;--gray:#626e78}}
 * {{box-sizing:border-box}}body {{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 "Segoe UI",Arial,sans-serif}}.container {{max-width:1180px;margin:auto;padding:30px 22px 44px}}.masthead {{position:relative;background:var(--navy);color:#fff;padding:30px 34px;border-bottom:5px solid var(--teal);border-radius:5px 5px 0 0}}.masthead .brand {{font-size:13px;letter-spacing:.18em;text-transform:uppercase;color:#d7e5eb;font-weight:700}}.lang-selector-bar {{display:flex;align-items:center;gap:0;margin-bottom:12px}}.lang-btn {{display:inline-flex;padding:3px 6px;color:#d7e5eb;text-decoration:none}}.lang-btn:hover,.lang-btn:focus-visible {{color:#fff;text-decoration:underline}}.lang-btn.active {{color:#fff}}.lang-name {{font:700 12px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.06em}}.lang-divider {{color:#9fb0c0;margin:0 4px}}h1,h2,h3,.eyebrow,.mast-meta {{font-family:ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace;text-transform:uppercase}}h1 {{font-size:26px;font-weight:700;margin:8px 0 14px;line-height:1.25}}.mast-meta {{display:flex;gap:22px;flex-wrap:wrap;color:#e2eaf0;font-size:12px;letter-spacing:.06em}}.mast-meta b {{color:#fff}}
@@ -579,112 +667,36 @@ def html_report(doc: dict[str, Any]) -> str:
 .iso-reference-badge .iso-operator {{display:block;font-size:12px;color:#d7e5eb}}
 .iso-reference-badge b,.iso-reference-badge strong {{color:#fff}}
 
-.panel,.record {{background:var(--paper);border:1px solid var(--line);border-radius:4px;margin-top:20px;padding:24px;box-shadow:0 2px 6px #162f4510}}h2 {{margin:0;font-size:19px;font-weight:700;color:var(--navy)}}h3 {{font-size:15px;font-weight:700;margin:16px 0 6px;color:var(--blue)}}h4 {{margin:15px 0 7px;color:var(--blue)}}.eyebrow {{font-size:11px;letter-spacing:.12em;color:var(--muted);font-weight:700;margin:0 0 4px}}.stats {{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin-top:18px}}.stat {{border:1px solid var(--line);border-top:3px solid var(--blue);padding:11px 12px;background:#f9fbfc;min-width:0}}.stat span {{display:block;font-size:12px;line-height:1.35;color:var(--muted)}}.stat b {{font-size:23px;color:var(--navy)}}.record-head,.card-head {{display:flex;align-items:center;justify-content:space-between;gap:14px}}.record-head {{border-bottom:1px solid var(--line);padding-bottom:14px;margin-bottom:18px}}.evidence-grid {{display:grid;grid-template-columns:1fr 1fr;gap:16px}}.evidence-card {{border:1px solid var(--line);border-radius:4px;padding:18px;background:#fff;break-inside:avoid}}.kind {{font-size:10px;letter-spacing:.12em;font-weight:800;color:var(--blue)}}.source-link {{margin:10px 0}}.source-link a {{color:var(--blue);font-weight:700}}.path {{font:12px/1.4 Consolas,monospace;color:var(--muted);overflow-wrap:anywhere;margin:3px 0 0}}.status {{display:inline-block;border-radius:3px;padding:5px 9px;font-size:11px;font-weight:800;letter-spacing:.04em;white-space:nowrap;background:#eef1f3;color:var(--gray)}}.status-COINCIDENTE {{background:#e2f1eb;color:var(--ok)}}.status-DISCREPANCIA,.status-ERROR,.status-CAMBIO_DURANTE_LECTURA {{background:#f8e7e5;color:var(--bad)}}.status-INCOMPLETO,.status-NO_VERIFICABLE {{background:#fff0d5;color:var(--warn)}}dl.fields,dl.detail {{margin:13px 0 0}}.field {{display:grid;grid-template-columns:minmax(155px, .8fr) minmax(0,1.5fr);gap:10px;padding:7px 0;border-bottom:1px solid #e8edf0}}dt {{font-size:12px;color:var(--muted)}}dd {{margin:0;overflow-wrap:anywhere}}.hash-field dd {{display:flex;align-items:flex-start;gap:8px}}code {{font:12px/1.55 Consolas,"Courier New",monospace;overflow-wrap:anywhere;color:#142b45}}button.copy {{border:1px solid var(--line);background:#f7f9fa;color:var(--blue);border-radius:3px;padding:3px 7px;font-size:11px;cursor:pointer}}.detail {{border-top:1px solid var(--line);margin-top:17px;padding-top:2px}}.detail p {{margin:7px 0}}.muted,.empty {{font-size:12px;color:var(--muted)}}.methodology {{border-left:4px solid var(--teal)}}.methodology p,.intro p {{margin:8px 0}}.intro h3 {{margin-top:18px}}.footer {{font-size:12px;color:var(--muted);padding:20px 4px;text-align:center}}.contact address {{font-style:normal;display:flex;gap:18px;flex-wrap:wrap;margin-top:12px}}.contact a {{color:var(--blue);font-weight:700;text-decoration:none}}.contact a:hover {{text-decoration:underline}}.contact .contact-links {{display:flex;gap:18px;flex-wrap:wrap}}.reference-note {{margin-top:16px;padding-top:12px;border-top:1px solid var(--line);color:var(--muted);font-size:13px}}
+.panel,.record {{background:var(--paper);border:1px solid var(--line);border-radius:4px;margin-top:20px;padding:24px;box-shadow:0 2px 6px #162f4510}}h2 {{margin:0;font-size:19px;font-weight:700;color:var(--navy)}}h3 {{font-size:15px;font-weight:700;margin:16px 0 6px;color:var(--blue)}}h4 {{margin:15px 0 7px;color:var(--blue)}}.eyebrow {{font-size:11px;letter-spacing:.12em;color:var(--muted);font-weight:700;margin:0 0 4px}}.stats {{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin-top:18px}}.stat {{border:1px solid var(--line);border-top:3px solid var(--blue);padding:11px 12px;background:#f9fbfc;min-width:0}}.stat span {{display:block;font-size:12px;line-height:1.35;color:var(--muted)}}.stat b {{font-size:23px;color:var(--navy)}}.record-head,.card-head {{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap}}.record-head {{border-bottom:1px solid var(--line);padding-bottom:14px;margin-bottom:18px}}.evidence-grid {{display:grid;grid-template-columns:1fr 1fr;gap:16px}}.evidence-card {{border:1px solid var(--line);border-radius:4px;padding:18px;background:#fff;break-inside:avoid}}.kind {{font-size:10px;letter-spacing:.12em;font-weight:800;color:var(--blue)}}.source-link {{margin:10px 0}}.source-link a {{color:var(--blue);font-weight:700}}.path {{font:12px/1.4 Consolas,monospace;color:var(--muted);overflow-wrap:anywhere;margin:3px 0 0}}.status {{display:inline-block;border-radius:3px;padding:5px 9px;font-size:11px;font-weight:800;letter-spacing:.04em;white-space:nowrap;background:#eef1f3;color:var(--gray)}}.status-COINCIDENTE {{background:#e2f1eb;color:var(--ok)}}.status-DISCREPANCIA,.status-ERROR,.status-CAMBIO_DURANTE_LECTURA {{background:#f8e7e5;color:var(--bad)}}.status-INCOMPLETO,.status-NO_VERIFICABLE {{background:#fff0d5;color:var(--warn)}}dl.fields,dl.detail {{margin:13px 0 0}}.field {{display:grid;grid-template-columns:minmax(155px, .8fr) minmax(0,1.5fr);gap:10px;padding:7px 0;border-bottom:1px solid #e8edf0}}dt {{font-size:12px;color:var(--muted)}}dd {{margin:0;overflow-wrap:anywhere}}.hash-field dd {{display:flex;align-items:flex-start;gap:8px}}code {{font:12px/1.55 Consolas,"Courier New",monospace;overflow-wrap:anywhere;color:#142b45}}button.copy {{border:1px solid var(--line);background:#f7f9fa;color:var(--blue);border-radius:3px;padding:3px 7px;font-size:11px;cursor:pointer}}.detail {{border-top:1px solid var(--line);margin-top:17px;padding-top:2px}}.detail p {{margin:7px 0}}.muted,.empty {{font-size:12px;color:var(--muted)}}.methodology {{border-left:4px solid var(--teal)}}.methodology p,.intro p {{margin:8px 0}}.intro h3 {{margin-top:18px}}.footer {{font-size:12px;color:var(--muted);padding:20px 4px;text-align:center}}.contact address {{font-style:normal;display:flex;gap:18px;flex-wrap:wrap;margin-top:12px}}.contact a {{color:var(--blue);font-weight:700;text-decoration:none}}.contact a:hover {{text-decoration:underline}}.contact .contact-links {{display:flex;gap:18px;flex-wrap:wrap}}.reference-note {{margin-top:16px;padding-top:12px;border-top:1px solid var(--line);color:var(--muted);font-size:13px}}
 @media(max-width:850px){{.stats {{grid-template-columns:repeat(3,minmax(0,1fr))}}.evidence-grid {{grid-template-columns:1fr}}}}
-/* --- ADAPTACION RESPONSIVE PARA MOVILES --- */
 @media(max-width:540px){{
-    .container {{
-        padding:12px;
-    }}
-
-    .masthead {{
-        padding:20px 16px;
-    }}
-
-    /* Referencia metodologica ISO */
-    .iso-reference-badge {{
-        position:static;
-        display:block;
-        width:100%;
-        max-width:100%;
-        box-sizing:border-box;
-        text-align:left;
-        margin:0 0 16px;
-        padding:11px 12px;
-        overflow-wrap:anywhere;
-        line-height:1.45;
-    }}
-
-    .iso-reference-badge .iso-title {{
-        font-size:10px;
-        line-height:1.4;
-    }}
-
-    .iso-reference-badge .iso-ref {{
-        font-size:11px;
-        overflow-wrap:anywhere;
-    }}
-
-    .iso-reference-badge .iso-operator {{
-        font-size:11px;
-        overflow-wrap:anywhere;
-    }}
-
-    /* Identidad IceVeritas */
-    .masthead .brand {{
-        display:block;
-        font-size:11px;
-        letter-spacing:.14em;
-        line-height:1.5;
-    }}
-
-    .lang-selector-bar {{
-        margin-bottom:14px;
-    }}
-
-    /* Titulo principal */
-    h1 {{
-        font-size:clamp(22px,6.5vw,27px);
-        line-height:1.2;
-        margin:12px 0 18px;
-        overflow-wrap:anywhere;
-    }}
-
-    /* Identificacion y metadatos de auditoria */
-    .mast-meta {{
-        display:grid;
-        grid-template-columns:1fr;
-        gap:10px;
-        font-size:11px;
-        letter-spacing:.035em;
-        line-height:1.5;
-    }}
-
-    .mast-meta span {{
-        min-width:0;
-        overflow-wrap:anywhere;
-    }}
-
-    /* Paneles y contenido */
-    .panel,.record {{
-        padding:18px;
-    }}
-
-    .stats {{
-        grid-template-columns:repeat(2,minmax(0,1fr));
-    }}
-
-    .field {{
-        grid-template-columns:1fr;
-        gap:2px;
-    }}
-
-    .card-head {{
-        align-items:flex-start;
-        flex-direction:column;
-    }}
+    .container {{padding:12px;}}
+    .masthead {{padding:20px 16px;}}
+    .iso-reference-badge {{position:static;display:block;width:100%;max-width:100%;box-sizing:border-box;text-align:left;margin:0 0 16px;padding:11px 12px;overflow-wrap:anywhere;line-height:1.45;}}
+    .iso-reference-badge .iso-title {{font-size:10px;line-height:1.4;}}
+    .iso-reference-badge .iso-ref {{font-size:11px;overflow-wrap:anywhere;}}
+    .iso-reference-badge .iso-operator {{font-size:11px;overflow-wrap:anywhere;}}
+    .masthead .brand {{display:block;font-size:11px;letter-spacing:.14em;line-height:1.5;}}
+    .lang-selector-bar {{margin-bottom:14px;}}
+    h1 {{font-size:clamp(22px,6.5vw,27px);line-height:1.2;margin:12px 0 18px;overflow-wrap:anywhere;}}
+    .mast-meta {{display:grid;grid-template-columns:1fr;gap:10px;font-size:11px;letter-spacing:.035em;line-height:1.5;}}
+    .mast-meta span {{min-width:0;overflow-wrap:anywhere;}}
+    .panel,.record {{padding:18px;}}
+    .stats {{grid-template-columns:repeat(2,minmax(0,1fr));}}
+    .field {{grid-template-columns:1fr;gap:2px;}}
+    .card-head {{align-items:flex-start;flex-direction:column;}}
 }}
 @media print{{@page {{size:auto;margin:13mm}}body {{background:#fff;font-size:11px}}.container {{max-width:none;padding:0}}.masthead {{print-color-adjust:exact;-webkit-print-color-adjust:exact;border-radius:0}}.panel,.record,.evidence-card {{box-shadow:none;break-inside:avoid}}.record {{break-before:auto}}.copy {{display:none}}.stats {{grid-template-columns:repeat(5,1fr)}}.evidence-grid {{grid-template-columns:1fr 1fr}}a {{color:inherit}}.iso-reference-badge {{border:none;background:none;padding:0}}}}
 </style></head><body><main class="container"><header class="masthead"><nav class="lang-selector-bar mb-3" aria-label="Selector de idioma"><a href="./BG/" class="lang-btn" title="Búlgaro" target="_blank" rel="noopener noreferrer"><span class="lang-name font-monospace fw-bold">BG</span></a><span class="lang-divider text-white-50 mx-1">|</span><a href="./ES/" class="lang-btn active" title="Español" target="_blank" rel="noopener noreferrer"><span class="lang-name font-monospace text-white-50">ES</span></a><span class="lang-divider text-white-50 mx-1">|</span><a href="./RU/" class="lang-btn" title="Русский" target="_blank" rel="noopener noreferrer"><span class="lang-name font-monospace text-white-50">RU</span></a></nav><div class="iso-reference-badge">
         <div class="iso-title">ISO/IEC 27037 METHODOLOGICAL REFERENCE</div>
         <div class="iso-ref"><strong>Réf:</strong> AUD-A8-REYRAN-2026</div>
         <div class="iso-operator"><strong>Entité concernée:</strong> VINCI Autoroutes (Escota)</div>
-    </div><div class="brand">IceVeritas · Informe técnico</div><h1>Manifiesto consolidado de evidencias</h1><div class="mast-meta"><span><b>Identificador de auditoría:</b> {esc(doc['audit_id'])}</span><span><b>Generado (UTC):</b> {esc(doc['generated_at_utc'])}</span><span><b>Versión:</b> Manifest — Versión 2.0</span></div>
+    </div><div class="brand">IceVeritas · Informe técnico</div><h1>Manifiesto consolidado de evidencias</h1><div class="mast-meta"><span><b>Identificador de auditoría:</b> {esc(doc['audit_id'])}</span><span><b>Generado (UTC):</b> {esc(doc['generated_at_utc'])}</span><span><b>Versión:</b> {esc(doc['generator'])}</span></div>
                             </header>
 <section class="panel intro"><p class="eyebrow">PRESENTACIÓN DEL PROYECTO</p><h2>Sobre el proyecto IceVeritas</h2><p>IceVeritas es un proyecto orientado a la documentación técnica, identificación y verificación de la integridad de materiales digitales.</p><p>Su metodología combina procedimientos de análisis de archivos, registro de atributos técnicos y temporales, cálculo de huellas criptográficas SHA-256 y consolidación de resultados.</p><p>El objetivo es proporcionar documentación estructurada, trazable y verificable sobre los materiales digitales examinados, facilitando su identificación, conservación y posterior evaluación por terceros.</p><p>Los informes generados documentan los controles efectivamente realizados y sus resultados, distinguiendo los datos observados de las inferencias y de los aspectos que no han podido verificarse.</p><h3>Finalidad del presente documento</h3><p>El presente manifiesto recoge los resultados consolidados del procedimiento de examen de los archivos digitales incluidos en los registros identificados.</p><p>Se documentan los archivos de origen, sus características técnicas, las huellas SHA-256 y los atributos temporales disponibles, junto con los resultados de las comprobaciones realizadas.</p></section>
 <section class="panel"><p class="eyebrow">RESUMEN EJECUTIVO</p><h2>Alcance de la revisión</h2><div class="stats">{cards}</div><p class="muted">Las piezas asociadas se calculan como datos de origen más un TXT principal por respuesta. Los TXT de respaldo se contabilizan como documentación auxiliar adicional. Cada archivo se cuenta una sola vez en el total de archivos examinados.</p></section>
 {''.join(sections)}
-<section class="panel methodology"><p class="eyebrow">METODOLOGÍA Y ALCANCE</p><h2>Transparencia metodológica</h2><p>Intervinieron tres módulos: <b>Módulo de Análisis y Verificación de Datos Digitales</b> (Solo Lectura — Versión 9.2); <b>Módulo de Análisis de Trazabilidad Temporal</b> (Time Stamp — Versión 2.0.0); y <b>Módulo de Consolidación y Documentación Forense</b> (Manifest — Versión 2.0).</p><p>Los registros se correlacionaron por identificador de respuesta. Dentro de cada registro, los archivos se emparejaron primero por ruta relativa y, como alternativa, por nombre y tipo de archivo. Las comparaciones SHA-256 se cuentan por pareja de archivos correlacionada con ambos hashes disponibles; los estados se derivan de los hashes y de los estados de lectura recibidos. En esta ejecución se compararon {s['comparaciones_sha256']} parejas: {s['coincidentes']} coincidencias, {s['discrepancias']} discrepancias y {s['errores']} errores.</p><p>En los PNG se registraron la validez de la firma, el número de chunks comprobados, los errores CRC, errores de validación, avisos, el chunk tIME y los metadatos de texto disponibles. Para los MKV se registraron atributos del sistema de archivos, incluidos mtime y ctime; los metadatos internos del contenedor figuran como <b>NO ANALIZADOS</b>.</p><p>Los timestamps del sistema de archivos no acreditan por sí solos la fecha original de captura. La coincidencia de hashes entre módulos acredita consistencia de resultados, pero no constituye dos pruebas independientes de autenticidad. Estos controles tampoco demuestran por sí solos autoría ni integridad histórica.</p><div class="reference-note"><h3>Marco de referencia internacional</h3><p>El procedimiento toma como referencia metodológica determinados principios de identificación, recopilación, adquisición y preservación de información digital contemplados en la norma internacional ISO/IEC 27037:2012.</p><p>Esta referencia se utiliza como orientación metodológica y no constituye una declaración de certificación, acreditación ni conformidad integral con los requisitos de dicha norma.</p></div></section>
+<section class="panel methodology"><p class="eyebrow">METODOLOGÍA Y ALCANCE</p><h2>Transparencia metodológica</h2><p>Intervinieron tres módulos: <b>Módulo de Análisis y Verificación de Datos Digitales</b> ({esc(doc['modules']['solo_lectura'].get('version'))}); <b>Módulo de Análisis de Trazabilidad Temporal</b> (Time Stamp — {esc(doc['modules']['time_stamp'].get('version'))}); y <b>Módulo de Consolidación y Documentación Forense</b> ({esc(doc['generator'])}).</p><p>Los registros se correlacionaron por identificador de respuesta. Dentro de cada registro, los archivos se emparejaron primero por ruta relativa y, como alternativa, por nombre y tipo de archivo. Las comparaciones SHA-256 se cuentan por pareja de archivos correlacionada con ambos hashes disponibles; los estados se derivan de los hashes y de los estados de lectura recibidos. En esta ejecución se compararon {s['comparaciones_sha256']} parejas: {s['coincidentes']} coincidencias, {s['discrepancias']} discrepancias y {s['errores']} errores.</p><p>En los PNG se registraron la validez de la firma, el número de chunks comprobados, los errores CRC, errores de validación, avisos, el chunk tIME y los metadatos de texto disponibles. Para los MKV se registraron atributos del sistema de archivos, incluidos mtime y ctime; los metadatos internos del contenedor figuran como <b>NO ANALIZADOS</b>.</p><p>Los timestamps del sistema de archivos no acreditan por sí solos la fecha original de captura. La coincidencia de hashes entre módulos acredita consistencia de resultados, pero no constituye dos pruebas independientes de autenticidad. Estos controles tampoco demuestran por sí solos autoría ni integridad histórica.</p><div class="reference-note"><h3>Marco de referencia internacional</h3><p>El procedimiento toma como referencia metodológica determinados principios de identificación, recopilación, adquisición y preservación de información digital contemplados en la norma internacional ISO/IEC 27037:2012.</p><p>Esta referencia se utiliza como orientación metodológica y no constituye una declaración de certificación, acreditación ni conformidad integral con los requisitos de dicha norma.</p></div></section>
 <section class="panel contact" aria-labelledby="contact-title"><p class="eyebrow">CONTACTO</p><h2 id="contact-title">{esc(doc['contact']['name'])}</h2><address class="contact-links"><a href="{html.escape(doc['contact']['email_href'], quote=True)}" title="Enviar correo electrónico a Atanas Atanasov" aria-label="Enviar correo electrónico a Atanas Atanasov: {esc(doc['contact']['email'])}">{esc(doc['contact']['email'])}</a><a href="{html.escape(doc['contact']['whatsapp_url'], quote=True)}" title="Contactar con Atanas Atanasov por WhatsApp" aria-label="Abrir conversación de WhatsApp con Atanas Atanasov al {esc(doc['contact']['whatsapp'])}" target="_blank" rel="noopener noreferrer">WhatsApp: {esc(doc['contact']['whatsapp'])}</a><span>{esc(doc['contact']['profile'])}</span></address></section><footer class="footer">IceVeritas · Documento derivado de los JSON de entrada · Auditoría {esc(doc['audit_id'])}</footer></main><script>document.querySelectorAll('.copy').forEach(b=>b.addEventListener('click',async()=>{{try{{await navigator.clipboard.writeText(b.dataset.copy);b.textContent='Copiado';setTimeout(()=>b.textContent='Copiar',1200)}}catch(e){{b.textContent='No disponible'}}}}));</script></body></html>'''
 
 
@@ -698,12 +710,22 @@ def unique_stem(audit_id: str, dirs: list[Path]) -> str:
     return stem
 
 
+def validate_output_isolation(output_dir: Path, protected_roots: list[Path]) -> None:
+    """Impide escribir resultados dentro de la carpeta fuente de evidencias o de los JSON de entrada."""
+    for root in protected_roots:
+        if root.exists():
+            try:
+                fc.validate_output_dir(root, output_dir)
+            except fc.ForensicPathError as exc:
+                raise ValueError(f"Ruta de salida no aislada respecto a '{root}': {exc}") from exc
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="IceVeritas: consolida Solo Lectura y Time Stamp en un manifiesto de PNG y MKV.")
-    project = Path(__file__).resolve().parent.parent
+    parser = argparse.ArgumentParser(description="IceVeritas: consolida Solo Lectura y Time Stamp en un manifiesto de PNG, MKV y TXT.")
+    project = Path(__file__).resolve().parent
     parser.add_argument("--solo_json", type=Path, help="JSON de Solo Lectura (por defecto, el más reciente en json/).")
     parser.add_argument("--timestamp_json", type=Path, help="JSON de Time Stamp (por defecto, el más reciente en json/).")
-    parser.add_argument("--output_dir", type=Path, default=project, help="Raíz del proyecto; las salidas van a json/, manifest_html/ y txt/.")
+    parser.add_argument("--output_dir", type=Path, default=project, help="Raíz de salida; genera json/, manifest_html/ y txt/.")
     args = parser.parse_args(argv)
     json_dir = args.output_dir / "json"
     solo_path = args.solo_json or next(iter(sorted(json_dir.glob("solo_lectura*.json"), key=lambda p: p.stat().st_mtime, reverse=True)), None)
@@ -714,27 +736,53 @@ def main(argv: list[str] | None = None) -> int:
         if not p.is_file() or p.suffix.lower() != ".json":
             parser.error(f"No es un archivo JSON existente: {p}")
     try:
-        solo, timestamp = read_json(solo_path), read_json(time_path)
+        solo = read_json(solo_path, "solo_lectura")
+        timestamp = read_json(time_path, "time_stamp")
+        validate_inputs_compatibility(solo, timestamp)
+        protected_roots = [Path(str(solo["input_directory"]))]
+        validate_output_isolation(args.output_dir, protected_roots)
+        records, unsupported_artifacts = correlate(solo, timestamp, solo.get("input_directory"))
+        source_index_path = Path(str(solo["input_directory"])) / str(solo["index_filename"])
+        source_records, source_index_hash = read_source_index(source_index_path)
     except ValueError as exc:
         parser.error(str(exc))
-    records = correlate(solo, timestamp, solo.get("input_directory"))
-    source_index_path = None
-    if solo.get("input_directory") and solo.get("index_filename"):
-        source_index_path = Path(str(solo["input_directory"])) / str(solo["index_filename"])
-    source_records, source_index_hash = read_source_index(source_index_path)
+
     for source_record in source_records.values():
         source_record["html_filename"] = source_index_path.name if source_index_path else "NO DISPONIBLE"
+
     now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
     audit_id = "IV-" + now.strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8].upper()
+    summary = summarize(records, source_records, unsupported_artifacts)
     doc = {
-        "schema": "iceveritas.manifest/2.0",
+        "schema": "iceveritas.manifest/2.0.1",
         "generator": VERSION,
         "audit_id": audit_id,
         "generated_at_utc": now.isoformat().replace("+00:00", "Z"),
-        "inputs": {"solo_lectura": str(solo_path.resolve()), "time_stamp": str(time_path.resolve()), "source_html": str(source_index_path.resolve()) if source_index_path and source_index_path.is_file() else None},
-        "modules": {"solo_lectura": {"version": solo.get("program_version"), "run_id": solo.get("run_id"), "run_timestamp_utc": solo.get("run_timestamp_utc")}, "time_stamp": {"version": timestamp.get("version"), "generated_at_utc": timestamp.get("generated_at_utc")}},
-        "summary": summarize(records),
-        "contact": {"name": "Atanas Atanasov", "email": "icedux@icloud", "email_href": "mailto:icedux@icloud", "whatsapp": "+34653583521", "whatsapp_url": "https://wa.me/34653583521", "profile": "icedux.art"},
+        "inputs": {
+            "solo_lectura": str(solo_path.resolve()),
+            "time_stamp": str(time_path.resolve()),
+            "source_html": str(source_index_path.resolve()) if source_index_path and source_index_path.is_file() else None,
+        },
+        "modules": {
+            "solo_lectura": {
+                "version": solo.get("program_version"),
+                "run_id": solo.get("run_id"),
+                "run_timestamp_utc": solo.get("run_timestamp_utc"),
+            },
+            "time_stamp": {
+                "version": timestamp.get("version"),
+                "generated_at_utc": timestamp.get("generated_at_utc"),
+            },
+        },
+        "summary": summary,
+        "contact": {
+            "name": "Atanas Atanasov",
+            "email": "icedux@icloud",
+            "email_href": "mailto:icedux@icloud",
+            "whatsapp": "+34653583521",
+            "whatsapp_url": "https://wa.me/34653583521",
+            "profile": "icedux.art",
+        },
         "records": records,
         "source_html_sha256": source_index_hash,
         "documentary_reports": [],
@@ -776,7 +824,7 @@ def main(argv: list[str] | None = None) -> int:
     doc["consolidated_reports"] = documentary_reports
     doc["summary"]["informes_consolidados_generados"] = len(documentary_reports)
     json_path.write_text(json.dumps(doc, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    html_path.write_text(html_report(doc), encoding="utf-8")
+    html_path.write_text(html_report(doc, source_records), encoding="utf-8")
     print(f"Auditoría: {audit_id}")
     print(f"JSON consolidado: {json_path}")
     print(f"HTML: {html_path}")
