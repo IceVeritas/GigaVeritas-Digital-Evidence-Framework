@@ -1,0 +1,105 @@
+
+name: "Предложение за функционалност / Solicitud de funcionalidad / Предложение новой функции"
+description: "Предложете подобрение / Propón una mejora / Предложите улучшение"
+title: "[FEATURE] "
+labels:
+  - enhancement
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        # BG — Български
+        Използвайте този формуляр, за да предложите нова функционалност или техническо подобрение на GigaVeritas Digital Evidence Framework.
+
+        Не включвайте реални доказателствени материали, лични данни, идентификатори на досиета или поверителни файлове.
+
+        # ES — Español
+        Utiliza este formulario para proponer una nueva funcionalidad o mejora técnica para GigaVeritas Digital Evidence Framework.
+
+        No incluyas evidencias reales, datos personales, identificadores de expedientes ni archivos confidenciales.
+
+        # RU — Русский
+        Используйте эту форму для предложения новой функции или технического улучшения GigaVeritas Digital Evidence Framework.
+
+        Не включайте реальные доказательственные материалы, персональные данные, идентификаторы дел или конфиденциальные файлы.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: "Кратко описание / Resumen / Краткое описание"
+      description: "Опишете предложението накратко / Describe brevemente la propuesta / Кратко опишите предложение."
+      placeholder: "..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: "Проблем или необходимост / Problema o necesidad / Проблема или потребность"
+      description: "Какъв проблем решава предложението? / ¿Qué problema pretende resolver? / Какую проблему решает предложение?"
+      placeholder: "..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: "Предложено решение / Solución propuesta / Предлагаемое решение"
+      description: "Опишете как трябва да работи функционалността / Explica cómo debería funcionar / Опишите, как должна работать функция."
+      placeholder: "..."
+    validations:
+      required: true
+
+  - type: dropdown
+    id: module
+    attributes:
+      label: "Засегнат модул / Módulo afectado / Затрагиваемый модуль"
+      description: "Изберете един или повече модули / Selecciona uno o varios módulos / Выберите один или несколько модулей."
+      multiple: true
+      options:
+        - "forensic_core.py — Основно ядро / Núcleo principal / Основное ядро"
+        - "solo_lectura.py — Само за четене / Solo lectura / Только чтение"
+        - "time_stamp.py — Времеви атрибути и хеширане / Atributos temporales y hash / Временные атрибуты и хеширование"
+        - "manifest.py — Манифест / Manifiesto / Манифест"
+        - "HTML — Отчети / Informes / Отчёты"
+        - "JSON — Структурирани данни / Datos estructurados / Структурированные данные"
+        - "Обща архитектура / Arquitectura general / Общая архитектура"
+        - "Документация / Documentación / Документация"
+        - "Друго / Otro / Другое"
+    validations:
+      required: true
+
+  - type: textarea
+    id: benefit
+    attributes:
+      label: "Очаквана полза / Beneficio esperado / Ожидаемая польза"
+      description: "Как предложението ще подобри проекта? / ¿Cómo mejoraría el proyecto? / Как предложение улучшит проект?"
+      placeholder: "..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: "Алтернативи / Alternativas / Альтернативы"
+      description: "Има ли други възможни решения? / ¿Has considerado otras soluciones? / Рассматривались ли другие решения?"
+      placeholder: "..."
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: "Поверителност и сигурност / Privacidad y seguridad / Конфиденциальность и безопасность"
+      options:
+        - label: "Не съм включил реални доказателства, лични данни или поверителни файлове. / No he incluido evidencias reales, datos personales ni archivos confidenciales. / Я не включил реальные доказательства, персональные данные или конфиденциальные файлы."
+          required: true
+
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: "Обхват на проекта / Alcance del proyecto / Область проекта"
+      options:
+        - label: "Разбирам, че GigaVeritas обработва локално вече придобити материали и не извършва автоматично придобиване от Google Maps. / Entiendo que GigaVeritas procesa localmente material previamente adquirido y no realiza adquisición automática desde Google Maps. / Я понимаю, что GigaVeritas локально обрабатывает ранее полученные материалы и не осуществляет автоматический сбор данных из Google Maps."
+          required: true
