@@ -8,6 +8,196 @@
 
 ---
 
+<a id="en"></a>
+
+# Time Stamp — Descriptive Evidence Synchronization
+
+**IceVeritas Time Stamp 2.0.0** (`time_stamp.py`) is a Python module designed to discover files associated with records in a digital case file, compute SHA-256 cryptographic hashes, and record file system timestamp attributes.
+
+Its primary function is to incorporate descriptive technical information into a derived copy of the original HTML document and generate an independent JSON report with the processing results.
+
+## 1. Module Responsibilities
+
+The module performs the following operations:
+
+- Identification of records within an HTML document.
+- Location of folders associated with each record.
+- Recursive discovery of evidence files.
+- Classification of files by categories and extensions.
+- Computation of SHA-256 cryptographic hashes.
+- Recording of file size and file system timestamp attributes.
+- Detection of certain changes in file size or modification time during reading.
+- Incorporation of descriptive information into a derived copy of the HTML document.
+- Generation of an independent JSON report.
+- Logging of events and operations.
+
+## 2. Input Structure
+
+The module operates on a previously collected local case file.
+
+The expected input structure must include:
+
+- An index HTML document located directly in the root directory of the case file.
+- Data records embedded in the HTML document, structured using identifier fields (`data-field`) and grouped into their corresponding container elements.
+- Record identifiers following the case naming convention, with the reference prefix `AUD-` (for example, `AUD-...`).
+- Folders associated with the record identifiers, containing the files corresponding to each record.
+
+When a folder with hyphens in the identifier is not found, the module provides a fallback search by replacing hyphens with underscores.
+
+## 3. File Discovery and Classification
+
+The module performs a recursive traversal of the folders associated with the records.
+
+It uses its own catalog of **27 extensions**, grouped into five categories:
+
+| Category | Extensions |
+|---|---|
+| Images | `.png`, `.jpg`, `.jpeg`, `.heic`, `.heif`, `.gif` |
+| Video | `.mp4`, `.mkv`, `.avi`, `.mov` |
+| Audio | `.mp3`, `.wav`, `.m4a`, `.ogg`, `.flac` |
+| Documents | `.pdf`, `.doc`, `.docx`, `.xls`, `.xlsx`, `.odt`, `.txt`, `.html`, `.mht` |
+| Email | `.eml`, `.msg`, `.pst`, `.ost`, `.mbox` |
+
+Classification is performed based on the file extension. Inclusion in this catalog does not imply internal analysis, extraction of specific metadata, or structural validation of all formats.
+
+**Architectural note:** the `time_stamp.py` catalog is currently independent of the catalog defined in `forensic_core.py`, although both contain the same extensions.
+
+## 4. SHA-256 Computation and Read-Time Control
+
+For each supported file, the module computes a SHA-256 hash using binary reading in **1 MiB** blocks.
+
+The calculation is performed using an open file descriptor. Before and after reading, attributes are retrieved via `os.fstat()`.
+
+The result includes the following fields:
+
+| Field | Description |
+|---|---|
+| `sha256` | SHA-256 cryptographic hash. |
+| `hash_status` | Status of the hash computation operation. |
+| `size_bytes` | File size in bytes. |
+| `mtime_utc` | File system modification timestamp in UTC. |
+| `ctime_utc` | `ctime` timestamp attribute expressed in UTC. |
+| `file_changed_during_read` | Indicator of changes detected in size or `mtime` during reading. |
+
+If a read error occurs, the module records the `ERROR` status along with the corresponding error details.
+
+Comparing attributes enables the detection of certain changes during the operation, but it does not constitute an absolute guarantee that the file remained unaltered throughout the entire process.
+
+## 5. Timestamp Attributes
+
+The module records the timestamp attributes provided by the file system:
+
+- `mtime`: last modification time.
+- `ctime`: timestamp attribute whose meaning depends on the operating system.
+
+Values are converted to UTC format.
+
+These data describe the attributes observed during execution. They do not necessarily represent the original creation date, the moment of capture, or the actual time the file was incorporated into the case file.
+
+## 6. Derived HTML Generation
+
+The module processes the `article.card` elements identified in the original HTML.
+
+For each record:
+
+1. Identifies the corresponding record.
+2. Discovers associated files.
+3. Computes their hashes and records their attributes.
+4. Builds a descriptive artifact block.
+5. Incorporates the block into a derived copy of the HTML.
+
+The generated block contains information such as:
+
+- File category.
+- File name.
+- SHA-256 hash.
+- Hash calculation status.
+- File system modification date in UTC.
+
+If the HTML contains a previous block identified as `forensic-artifacts-block`, the module attempts to remove it before incorporating the new result.
+
+The original document is used as input; the enriched HTML is written to the output directory.
+
+## 7. JSON Report
+
+In addition to the derived HTML, the module generates an independent JSON report.
+
+The document includes:
+
+| Field | Description |
+|---|---|
+| `tool` | Tool identification. |
+| `version` | Module version. |
+| `generated_at_utc` | Report generation timestamp. |
+| `source_html` | Name of the input HTML file. |
+| `records_processed` | Number of records processed. |
+| `records` | Results associated with each record. |
+
+Each record contains information about the associated folder, the number of discovered files, and the technical data for each file.
+
+## 8. Logs and Execution Traceability
+
+Each execution uses a UTC timestamp identifier with microseconds and a unique suffix.
+
+The module generates a separate log file and also outputs information to the console.
+
+Logs allow reviewing operations, warnings, access errors, and file discovery results.
+
+## 9. Path and Read Controls
+
+The code incorporates controls intended to reduce the risk of processing unintended paths:
+
+- Verifies that the input directory exists and is a directory.
+- Rejects index names that represent paths or subdirectories.
+- Prevents the output directory from matching or being located inside the input directory.
+- Verifies that the input HTML is a regular file within the root directory.
+- Skips symbolic links detected during discovery.
+- Verifies that discovered files remain within the folder corresponding to the record.
+
+These controls are part of path validation and file traversal. They should not be interpreted as an absolute guarantee against all race conditions or concurrent file system modifications.
+
+## 10. Execution
+
+The module is executed from the command line using three arguments:
+
+```bash
+python time_stamp.py --input "/path/to/case" --output "/path/to/results" --index "index.html"
+```
+
+| Argument | Function |
+|---|---|
+| `--input` | Root directory of the original case file. |
+| `--output` | Independent directory for derived results. |
+| `--index` | Name of the original HTML file located directly in the input directory. |
+
+The `--index` argument is optional and defaults to `index.html`.
+
+## 11. Generated Files
+
+The module generates the following artifacts:
+
+| File | Content |
+|---|---|
+| `*_FIXED.html` | Derived copy of the HTML with descriptive blocks incorporated. |
+| `time_stamp_sync_<run_stamp>.json` | Structured report of discovered records and files. |
+| `time_stamp_sync_<run_stamp>.log` | Execution log. |
+
+Results are written to the independent directory specified via `--output`.
+
+## 12. Methodological Scope and Limitations
+
+Time Stamp is a **post-acquisition** technical documentation module. It does not perform live capture or scraping from Google Maps or other platforms.
+
+The SHA-256 calculation identifies the bytes read during a given execution and allows subsequent comparison of cryptographic hashes. On its own, it does not prove historical authenticity, authorship, provenance, or integrity from the original moment of acquisition.
+
+The `mtime` and `ctime` attributes reflect information provided by the file system and do not constitute trusted timestamping.
+
+The module does not perform full structural analysis of the 27 recognized formats, nor does it certify the authenticity of processed files.
+
+The reference to ISO/IEC 27037:2012 serves as a methodological guideline and does not imply certification or full software compliance with that standard.
+
+---
+
 <a id="es"></a>
 
 # Time Stamp — Sincronización descriptiva de evidencias
@@ -380,7 +570,7 @@ python time_stamp.py --input "/path/to/case" --output "/path/to/results" --index
 
 Time Stamp е модул за техническа документация **след придобиване (post-acquisition)**. Той не извършва заснемане или scraping в реално време от Google Maps или други платформи.
 
-Изчисляването на SHA-256 идентифицира байтовете, прочетени по време на изпълнението, и позволява последващо сравняване на криптографски хешове. Само по себе си то не доказва историческа автентичност, авторство, произход или цялост от момента на първоначалното придобиване.
+Изчисляването на SHA-256 идентифицира байтовете, прочетени по време на изпълнението, и позволяет последващо сравняване на криптографски хешове. Само по себе си то не доказва историческа автентичност, авторство, произход или цялост от момента на първоначалното придобиване.
 
 Атрибутите `mtime` и `ctime` отразяват информация, предоставена от файловата система, и не представляват надежден времеви печат.
 
@@ -521,7 +711,7 @@ Time Stamp е модул за техническа документация **с
 
 Каждое выполнение использует уникальный временной идентификатор UTC с микросекундами и дополнительным уникальным суффиксом.
 
-Модуль создаёт отдельный файл лога и одновременно выводит информацию в консоль.
+Модул создаёт отдельный файл лога и одновременно выводит информацию в консоль.
 
 Логи позволяют просматривать операции, предупреждения, ошибки доступа и результаты обнаружения файлов.
 
@@ -576,4 +766,4 @@ Time Stamp является модулем технического докуме
 
 Модуль не выполняет полный структурный анализ 27 распознаваемых форматов и не удостоверяет подлинность обрабатываемых файлов.
 
-Ссылка на ISO/IEC 27037:2012 используется в качестве методологической основы и не означает сертификацию или полное соответствие программного обеспечения данному стандарту.
+Ссылка на ISO/IEC 27037:2012 используется в качестве методологической основы и не означает сертификацию или полное соответствие программного обеспечения данному стандарт.
