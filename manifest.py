@@ -1,6 +1,61 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Generador de manifiesto IceVeritas para resultados Solo Lectura y Time Stamp."""
+
+"""
+================================================================================
+GigaVeritas Digital Evidence Framework — Módulo de Consolidación y Manifiesto (V2.0)
+================================================================================
+
+Proyecto       : GigaVeritas-Digital-Evidence-Framework
+Organización   : IceVeritas
+Autor          : Atanas Atanasov
+Módulo         : manifest.py
+Dependencia    : Informes JSON de Solo Lectura y Time Stamp
+Versión        : 2.0
+
+Marco metodológico:
+    ISO/IEC 27037:2012 — Guidelines for identification, collection,
+    acquisition and preservation of digital evidence.
+
+Compatibilidad : Python 3.10+ (biblioteca estándar; Windows / Linux)
+
+Descripción:
+    Consolida los resultados de los módulos Solo Lectura y Time Stamp mediante
+    la correlación de sus registros por identificador de expediente y la
+    comparación de las huellas SHA-256 de los archivos asociados.
+
+    Lee los campos documentales identificados mediante atributos data-field
+    en el HTML de origen y los integra en los informes correspondientes.
+
+    Genera un manifiesto JSON, un informe HTML de consulta y documentos TXT
+    individuales con información documental y técnica de cada expediente.
+
+    Registra los resultados de las comparaciones, los estados de integridad
+    recibidos de los módulos de origen y las observaciones metodológicas
+    pertinentes.
+
+Alcance y limitaciones metodológicas:
+    Este módulo consolida resultados previamente generados. No realiza por sí
+    mismo la adquisición de evidencias ni vuelve a examinar los archivos
+    originales para verificar su autenticidad.
+
+    La coincidencia entre hashes recibidos de Solo Lectura y Time Stamp
+    acredita consistencia entre los resultados comparados, pero no constituye
+    dos pruebas independientes de autenticidad.
+
+    Los atributos temporales del sistema de archivos no acreditan por sí solos
+    la fecha original de captura. La información documental depende de los
+    campos disponibles en el HTML de origen y de los datos recibidos de los
+    módulos precedentes.
+
+Nota sobre el marco metodológico:
+    La ISO/IEC 27037:2012 se utiliza como referencia metodológica. Su mención
+    no implica certificación ni conformidad integral del software con dicha
+    norma.
+
+Estado         : [PENDIENTE DE CLASIFICACIÓN]
+================================================================================
+"""
 from __future__ import annotations
 
 import argparse

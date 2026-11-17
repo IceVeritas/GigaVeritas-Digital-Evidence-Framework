@@ -1,17 +1,58 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 """
-SINCRONIZADOR FORENSE HTML/JSON - ICEVERITAS
-Versión 2.0.0
+================================================================================
+GigaVeritas Digital Evidence Framework — Módulo de Trazabilidad Temporal (V2.0.0)
+================================================================================
 
-Responsabilidades:
-- Descubrir archivos de evidencia asociados a cada registro.
-- Calcular SHA-256 y registrar atributos temporales del sistema de archivos.
-- Incorporar un resumen descriptivo en una copia derivada del HTML.
-- Generar un JSON independiente con los resultados.
-- No escribir ni modificar archivos del directorio fuente.
+Proyecto       : GigaVeritas-Digital-Evidence-Framework
+Organización   : IceVeritas
+Autor          : Atanas Atanasov
+Módulo         : time_stamp.py
+Dependencia    : Biblioteca estándar de Python
+Versión        : 2.0.0
 
-Nota: este programa documenta atributos técnicos. No determina autenticidad,
-autoría, integridad histórica ni el momento real de captura de un archivo.
+Marco metodológico:
+    ISO/IEC 27037:2012 — Guidelines for identification, collection,
+    acquisition and preservation of digital evidence.
+
+Compatibilidad : Python 3.10+ (biblioteca estándar; Windows / Linux)
+
+Descripción:
+    Ejecuta el descubrimiento recursivo de archivos asociados a los registros
+    de un expediente local. Calcula huellas SHA-256, registra el tamaño y los
+    atributos temporales del sistema de archivos y comprueba posibles cambios
+    detectables durante la lectura.
+
+    Incorpora un bloque descriptivo de los archivos descubiertos en una copia
+    derivada del documento HTML original y genera un informe JSON independiente
+    con los resultados del procesamiento. Registra asimismo la ejecución
+    mediante un archivo de log.
+
+Alcance y limitaciones metodológicas:
+    Este módulo procesa expedientes locales previamente recopilados. No realiza
+    captura ni scraping en vivo. Los timestamps registrados corresponden a
+    atributos del sistema de archivos y no acreditan necesariamente el momento
+    original de creación o captura del contenido.
+
+    SHA-256 permite identificar y comparar los bytes examinados, pero no
+    demuestra por sí solo autenticidad, autoría, procedencia ni integridad
+    histórica de los archivos.
+
+    Los archivos originales se leen sin modificaciones deliberadas. Los
+    resultados se generan en un directorio de salida independiente.
+
+Documentación:
+    docs/TIME_STAMP.md
+
+Nota sobre el marco metodológico:
+    La ISO/IEC 27037:2012 se utiliza como referencia metodológica. Su mención
+    no implica certificación ni conformidad integral del software con dicha
+    norma.
+
+Estado         : [PENDIENTE DE CLASIFICACIÓN]
+================================================================================
 """
 
 from __future__ import annotations
