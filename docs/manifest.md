@@ -362,7 +362,7 @@ Reference to this standard serves as methodological guidance. It does not imply 
 
 <a id="bg"></a>
 
-# Manifest — Консолидиране и документално представяне на цифрови доказателства
+# Manifest - Консолидиране и документално представяне на цифрови доказателства
 
 **IceVeritas Manifest 2.0** (`manifest.py`) е Python модул, предназначен за консолидиране на резултатите, генерирани от модулите **Solo Lectura** и **Time Stamp**.
 
